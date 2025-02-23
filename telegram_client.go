@@ -18,7 +18,7 @@ type TelegramMessage struct {
 }
 
 type TelegramClient interface {
-	Run(ctx context.Context, fetchFunc func(ctx context.Context, fromID int) ([]TelegramMessage, int, error)) error
+	Run(ctx context.Context, fetchFunc func(ctx context.Context) error) error
 }
 
 type telegramClient struct {
@@ -35,17 +35,30 @@ func NewTelegramClient(appID int, appHash, phone, sessionFile string) (TelegramC
 	return &telegramClient{client: client, phone: phone, sessionFile: sessionFile}, nil
 }
 
-func (t *telegramClient) Run(ctx context.Context, fetchFunc func(ctx context.Context, fromID int) ([]TelegramMessage, int, error)) error {
+func (t *telegramClient) Run(ctx context.Context, fetchFunc func(ctx context.Context) error) error {
 	return t.client.Run(ctx, func(ctx context.Context) error {
-		// Authentication flow
-		flow := auth.NewFlow(auth.Constant(t.phone, "", auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
-			fmt.Print("Enter Telegram auth code: ")
-			var code string
-			fmt.Scanln(&code)
-			return code, nil
-		})), auth.SendCodeOptions{})
-		if err := flow.Run(ctx, t.client.Auth()); err != nil {
-			return fmt.Errorf("auth: %v", err)
+		// Authentication flow with retry
+		const maxRetries = 5
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			flow := auth.NewFlow(auth.Constant(t.phone, "", auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
+				fmt.Print("Enter Telegram auth code: ")
+				var code string
+				fmt.Scanln(&code)
+				return code, nil
+			})), auth.SendCodeOptions{})
+			err := flow.Run(ctx, t.client.Auth())
+			if err == nil {
+				break // Success, exit retry loop
+			}
+			if err.Error() == "rpc error code 500: AUTH_RESTART" {
+				fmt.Printf("AUTH_RESTART error (attempt %d/%d), retrying in 5 seconds...\n", attempt, maxRetries)
+				time.Sleep(5 * time.Second)
+				if attempt == maxRetries {
+					return fmt.Errorf("auth failed after %d retries: %v", maxRetries, err)
+				}
+				continue
+			}
+			return fmt.Errorf("auth: %v", err) // Non-retryable error
 		}
 
 		// Get self to verify connection
@@ -54,22 +67,8 @@ func (t *telegramClient) Run(ctx context.Context, fetchFunc func(ctx context.Con
 			return fmt.Errorf("get self: %v", err)
 		}
 
-		// Keep the client running and delegate message fetching to the provided function
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				// Call the fetch function (passed from main.go)
-				messages, latestID, err := fetchFunc(ctx, 0) // fromID will be managed in main.go
-				if err != nil {
-					return fmt.Errorf("fetch messages: %v", err)
-				}
-				// Process messages here or let main.go handle them
-				fmt.Printf("Fetched %d messages, latest ID: %d\n", len(messages), latestID)
-				time.Sleep(30 * time.Second) // Polling interval
-			}
-		}
+		// Delegate to the fetch function
+		return fetchFunc(ctx)
 	})
 }
 

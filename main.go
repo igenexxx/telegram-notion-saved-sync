@@ -42,20 +42,21 @@ func main() {
 		log.Fatal("Get last ID:", err)
 	}
 
-	// Define the fetch function for the Telegram client
-	fetchFunc := func(ctx context.Context, fromID int) ([]TelegramMessage, int, error) {
-		return tgClient.(*telegramClient).FetchMessages(ctx, fromID) // Type assertion to access internal method
-	}
-
-	// Run the Telegram client with the fetch function
+	// Run the Telegram client to process all messages and exit
 	ctx := context.Background()
-	err = tgClient.Run(ctx, func(ctx context.Context, fromID int) ([]TelegramMessage, int, error) {
+	err = tgClient.Run(ctx, func(ctx context.Context) error {
 		for {
-			messages, newLastID, err := fetchFunc(ctx, lastID)
+			messages, newLastID, err := tgClient.(*telegramClient).FetchMessages(ctx, lastID)
 			if err != nil {
 				log.Printf("Fetch messages: %v", err)
 				time.Sleep(5 * time.Second)
 				continue
+			}
+
+			// If no new messages, exit
+			if len(messages) == 0 {
+				log.Printf("No new messages found, exiting. Last processed ID: %d", lastID)
+				return nil // Exit the Run loop, closing the client and application
 			}
 
 			for _, msg := range messages {
@@ -72,8 +73,6 @@ func main() {
 			}
 
 			log.Printf("Processed %d messages, last ID: %d", len(messages), lastID)
-			time.Sleep(30 * time.Second) // Polling interval
-			return messages, lastID, nil // Return values not used here, but required by signature
 		}
 	})
 	if err != nil {
