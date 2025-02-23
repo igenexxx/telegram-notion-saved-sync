@@ -26,7 +26,7 @@ func main() {
 
 	// Setup Notion database if not exists
 	if config.NotionDatabaseID == "" {
-		databaseID, err := notionClient.CreateDatabase("")
+		databaseID, err := notionClient.CreateDatabase(config.NotionPageID)
 		if err != nil {
 			log.Fatal("Create Notion DB:", err)
 		}
@@ -36,36 +36,48 @@ func main() {
 		}
 	}
 
-	// Main loop for recurrent scanning
+	// Get initial last ID
 	lastID, err := db.GetLastUpdateID()
 	if err != nil {
 		log.Fatal("Get last ID:", err)
 	}
 
+	// Define the fetch function for the Telegram client
+	fetchFunc := func(ctx context.Context, fromID int) ([]TelegramMessage, int, error) {
+		return tgClient.(*telegramClient).FetchMessages(ctx, fromID) // Type assertion to access internal method
+	}
+
+	// Run the Telegram client with the fetch function
 	ctx := context.Background()
-	for {
-		messages, newLastID, err := tgClient.FetchMessages(ctx, lastID)
-		if err != nil {
-			log.Printf("Fetch messages: %v", err)
-			time.Sleep(5 * time.Second) // Backoff on error
-			continue
-		}
-
-		for _, msg := range messages {
-			if err := processMessage(notionClient, aiClient, config.NotionDatabaseID, msg); err != nil {
-				log.Printf("Process message %d: %v", msg.ID, err)
+	err = tgClient.Run(ctx, func(ctx context.Context, fromID int) ([]TelegramMessage, int, error) {
+		for {
+			messages, newLastID, err := fetchFunc(ctx, lastID)
+			if err != nil {
+				log.Printf("Fetch messages: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
 			}
-		}
 
-		if newLastID > lastID {
-			lastID = newLastID
-			if err := db.SetLastUpdateID(lastID); err != nil {
-				log.Printf("Set last ID %d: %v", lastID, err)
+			for _, msg := range messages {
+				if err := processMessage(notionClient, aiClient, config.NotionDatabaseID, msg); err != nil {
+					log.Printf("Process message %d: %v", msg.ID, err)
+				}
 			}
-		}
 
-		log.Printf("Processed %d messages, last ID: %d", len(messages), lastID)
-		time.Sleep(30 * time.Second) // Adjust polling interval
+			if newLastID > lastID {
+				lastID = newLastID
+				if err := db.SetLastUpdateID(lastID); err != nil {
+					log.Printf("Set last ID %d: %v", lastID, err)
+				}
+			}
+
+			log.Printf("Processed %d messages, last ID: %d", len(messages), lastID)
+			time.Sleep(30 * time.Second) // Polling interval
+			return messages, lastID, nil // Return values not used here, but required by signature
+		}
+	})
+	if err != nil {
+		log.Fatal("Telegram client run:", err)
 	}
 }
 

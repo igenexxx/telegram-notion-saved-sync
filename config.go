@@ -11,6 +11,7 @@ type Config struct {
 	TelegramAppHash  string `json:"telegram_app_hash"`
 	TelegramPhone    string `json:"telegram_phone"`
 	AIKey            string `json:"ai_key"`
+	NotionPageID     string `json:"notion_page_id"`
 	NotionDatabaseID string `json:"notion_database_id"`
 	DBPath           string `json:"db_path"`
 	SessionFile      string `json:"session_file"` // New field for session storage
